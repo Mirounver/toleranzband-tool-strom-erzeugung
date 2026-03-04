@@ -163,7 +163,6 @@ body{
   background:#fff;
   border-radius:10px;
   box-sizing:border-box;
-   grid-column:1 / -1;   
 }
 .uploadBox input[type="file"]{
   width:100%;
@@ -619,7 +618,7 @@ body{
 <div class="container">
 <div class="header header--center">
   <img src="N-ERGIE_LOGO_RGB.png" alt="N-ERGIE">
-  <h1>Toleranzbandrechnung Strom</h1>
+  <h1>Toleranzbandrechnung Strom Industrie</h1>
   <p>Berechnung eines angepassten Arbeitspreises auf Basis von Verbrauch und Spotpreis.</p>
 </div>
 
@@ -662,8 +661,8 @@ body{
    <div class="form">
     <div class="uploadBox" id="uploadBoxA">
       <div class="form-group" style="margin:0">
-        <label for="lastgangFile">Lastgang-Datei hochladen (CSV oder Excel)</label>
-        <input type="file" id="lastgangFile" accept=".csv,.xlsx,.xls">
+        <label for="lastgangFile">Lastgang-Datei hochladen (CSV oder Excel) <span style="color:red">*</span></label>
+<input type="file" id="lastgangFile" accept=".csv,.xlsx,.xls" multiple>
         <small style="display:block;color:#565656;margin-top:6px">
           15-Minuten-Lastgang für ein vollständiges Kalenderjahr
         </small>
@@ -684,6 +683,13 @@ body{
         </div>
       </div>
     </div>
+	<div class="form-group">
+  <label for="slpMWh">SLP-Menge MWh (optional)</label>
+  <input id="slpMWh" type="number" step="0.01" min="0">
+  <small style="display:block;color:#565656;margin-top:6px">
+    Wird dem Jahresverbrauch hinzugerechnet.
+  </small>
+</div>
   </div>
 </div>
 
@@ -868,10 +874,8 @@ function updateStatusCard(text, cls){
 
   title.innerHTML = text;
 
-  // Kartenklassen sauber zurücksetzen
   card.classList.remove("low","ok","high","warn");
 
-  // Preisfarbe immer zuerst auf Standard zurücksetzen
   price.style.color = "var(--ner-violet)";
 
   if(!cls) return;
@@ -972,6 +976,9 @@ function clearOptionA(){
 
   const file = document.getElementById("lastgangFile");
   if (file) file.value = "";
+
+  const slp = document.getElementById("slpMWh");
+  if (slp) slp.value = "";
 
   document.getElementById("unitBox").style.display = "none";
 }
@@ -1123,23 +1130,31 @@ if (hasError) {
   let AM = null; 
   let Spot = null;
 
-  if (mode === "A"){
-    if (!Number.isFinite(window.totalMWh) || !Number.isFinite(window.spotMarketValue)){
-      showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-	  setCalcEnabled(false);
-      return;
-    }
-    AM = window.totalMWh;
-    Spot = window.spotMarketValue;
-  } else {
-    AM = reqNumber(document.getElementById("sumMWh").value);
-    Spot = reqNumber(document.getElementById("spot").value);
+if (mode === "A"){
 
-    if (!AM || !Spot){
-      showWarning("Bitte alle Pflichtfelder ausfüllen.");
-      return;
-    }
+  if (!Number.isFinite(window.totalMWh) || !Number.isFinite(window.spotMarketValue)){
+    showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
+    setCalcEnabled(false);
+    return;
   }
+
+  const slpInput = document.getElementById("slpMWh");
+  const slpValue = slpInput && slpInput.value ? Number(slpInput.value) : 0;
+
+  AM = window.totalMWh + (Number.isFinite(slpValue) ? slpValue : 0);
+  Spot = window.spotMarketValue;
+
+} else {
+
+  AM = reqNumber(document.getElementById("sumMWh").value);
+  Spot = reqNumber(document.getElementById("spot").value);
+
+}
+
+if (!AM || !Spot){
+  showWarning("Bitte alle Pflichtfelder ausfüllen.");
+  return;
+}
 
   const TBU = 0.8 * VM;
   const TBO = 1.2 * VM;
@@ -1381,265 +1396,119 @@ document.getElementById("pdf").onclick = () => {
 };
 
 if (lastgangInput) {
-lastgangInput.addEventListener("change", () => {
+lastgangInput.addEventListener("change", async () => {
 
   resetResult();
-
-  clearCommonFields();   
-  clearOptionB();        
-  clearOptionalFields();   // ✅ optional jetzt auch leer
+  clearCommonFields();
+  clearOptionB();
+  clearOptionalFields();
 
   window.totalMWh = undefined;
   window.spotMarketValue = undefined;
   setCalcEnabled(false);
-
-
+const slp = document.getElementById("slpMWh");
+if (slp) slp.value = "";
   const unitBox = document.getElementById("unitBox");
   if (unitBox) unitBox.style.display = "none";
 
   setLoading(true);
 
+  const files = Array.from(lastgangInput.files);
+  if (!files.length){
+    setLoading(false);
+    return;
+  }
 
+  let totalKWhSum = 0;
+  let totalEuroSum = 0;
 
+  for (const file of files){
 
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, { type: "array" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
 
-    const file = lastgangInput.files[0];
-    if (!file){
-      setLoading(false);
-      return;
+    if (rows.length !== 35040) {
+      showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
     }
 
-    const reader = new FileReader();
+    let consumptionColumn = null;
+    let bestScore = -Infinity;
+    const sample = rows.slice(20, 500);
 
-    reader.onload = (e) => {
-      try{
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, { type: "array" });
-
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-
-        const maloCell = sheet["D3"] ? sheet["D3"].v : null;
-        const extractedMalo = extractMaloFromText(maloCell);
-        if (extractedMalo){
-          document.getElementById("malo").value = extractedMalo;
-          console.log("✅ Marktlokationsnummer erkannt (D3):", extractedMalo);
-        } else {
-          console.log("ℹ️ Keine Marktlokationsnummer in D3 erkannt.");
-        }
-
-        const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-
-        console.log("Lastgang geladen ✅");
-        console.log("Anzahl Zeilen:", rows.length);
-
-        if (rows.length !== 35040) {
-          showWarning("Der Lastgang umfasst nicht exakt 35.040 Viertelstundenwerte. Bitte prüfen.");
-        }
-
-let consumptionColumn = null;
-let bestScore = -Infinity;
-
-const sample = rows.slice(20, 500);
-
-function isMonotonicSequence(nums){
-  if (nums.length < 10) return false;
-  let inc = 0;
-  for (let i = 1; i < nums.length; i++){
-    if (nums[i] === nums[i-1] + 1) inc++;
-  }
-  return inc / (nums.length - 1) > 0.9;
-}
-
-function looksLikeDate(nums){
-  const inRange = nums.filter(n => n >= 30000 && n <= 60000).length;
-  return inRange / nums.length > 0.8;
-}
-
-Object.keys(rows[0]).forEach(col => {
-  const name = String(col).toLowerCase();
-
-  if (
-    name.includes("zeile") ||
-    name.includes("index") ||
-    name.includes("nr") ||
-    name.includes("datum") ||
-    name.includes("date") ||
-    name.includes("zeit") ||
-    name.includes("uhr") ||
-    name.includes("timestamp")
-  ) return;
-
-  const values = sample.map(r => r[col]);
-  const nums = values.map(v => Number(v)).filter(n => Number.isFinite(n));
-
-  if (nums.length < 50) return;
-
-  if (looksLikeDate(nums)) return;
-
-  if (isMonotonicSequence(nums)) return;
-
-  let score = 0;
-
-  score += nums.length;
-
-  const mean = nums.reduce((a,b)=>a+b,0) / nums.length;
-  const variance = nums.reduce((a,b)=>a + Math.pow(b-mean,2),0) / nums.length;
-  score += Math.min(variance, 1e6);
-
-  const zeroRatio = nums.filter(n => n === 0).length / nums.length;
-  if (zeroRatio > 0.9) score -= 5000;
-
-  if (name.includes("kwh")) score += 20000;
-  if (name.includes("kw") && !name.includes("kwh")) score += 15000;
-  if (name.includes("wert")) score += 12000;
-  if (name.includes("arbeit")) score += 10000;
-  if (name.includes("energie")) score += 10000;
-  if (name.includes("lastgang")) score += 8000;
-
-  if (score > bestScore){
-    bestScore = score;
-    consumptionColumn = col;
-  }
-});
-
-if (!consumptionColumn){
-  setLoading(false);
-  showWarning("Keine Verbrauchsspalte erkannt.<br>Bitte Option B verwenden.");
-  setCalcEnabled(false);
-  window.totalMWh = undefined;
-  window.spotMarketValue = undefined;
-  return;
-}
-
-console.log("☑ Erkannte Verbrauchsspalte:", consumptionColumn);
-window._lastgangRows = rows;
-window._consumptionColumn = consumptionColumn;
-
-
-        let unit = "kWh";
-
-        for (const r of rows.slice(0, 50)) {
-          const a  = String(r["Attribut"] ?? "").toLowerCase();
-          const av = String(r["Attributwert"] ?? "").toLowerCase();
-          if (a.includes("maß") || a.includes("einheit")) {
-            if (av.includes("kwh")) unit = "kWh";
-            else if (av.includes("kw")) unit = "kW";
-          }
-        }
-
-        const colLower = String(consumptionColumn).toLowerCase();
-        if (colLower.includes("kwh")) unit = "kWh";
-        if (!colLower.includes("kwh") && colLower.includes("kw")) unit = "kW";
-
-window.detectedUnit = unit;
-
-const unitBox = document.getElementById("unitBox");
-const unitSelectEl = document.getElementById("unitSelect");
-
-if (!unitSelectEl){
-  showWarning("Einheiten-Auswahlfeld fehlt.");
-  setLoading(false);
-  return;
-}
-
-if (unitBox && unitSelectEl) {
-  unitBox.style.display = "block";
-  unitSelectEl.value = unit;
-  unitSelectEl.onchange = () => recalcFromUnit();
-}
-
-
-        const selectedUnit = (unitSelectEl && unitSelectEl.value) ? unitSelectEl.value : (window.detectedUnit || "kWh");
-        const factor = selectedUnit === "kW" ? 0.25 : 1;
-
-        const consumptionKWh = rows.map((row, index) => {
-          const value = Number(row[consumptionColumn]);
-          const kWh = value * factor;
-          if (isNaN(kWh)) return 0;
-          return kWh;
-        });
-
-        const negativeCount = consumptionKWh.filter(v => v < 0).length;
-        if (negativeCount > 0) {
-          showWarning(`Es wurden negative Verbrauchswerte gefunden.<br>Bitte Lastgang prüfen. (Für sichere Berechnung ggf. Option B nutzen.)`);
-        }
-
-        if (!Array.isArray(SPOT_PRICES) || SPOT_PRICES.length === 0) {
-          setLoading(false);
-          showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-		  setCalcEnabled(false);
-          window.totalMWh = undefined;
-          window.spotMarketValue = undefined;
-          return;
-        }
-
-        if (consumptionKWh.length !== SPOT_PRICES.length) {
-          setLoading(false);
-          showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-		  setCalcEnabled(false);
-          window.totalMWh = undefined;
-          window.spotMarketValue = undefined;
-          return;
-        }
-
-        const spotCosts = consumptionKWh.map((kWh, i) => (kWh * SPOT_PRICES[i]) / 1000);
-
-        const totalKWh = consumptionKWh.reduce((a, b) => a + b, 0);
-        const totalMWh = totalKWh / 1000;
-
-        if (!Number.isFinite(totalMWh) || totalMWh <= 0) {
-          setLoading(false);
-          showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-		  setCalcEnabled(false);
-          window.totalMWh = undefined;
-          window.spotMarketValue = undefined;
-          return;
-        }
-
-        const totalEuro = spotCosts.reduce((a, b) => a + b, 0);
-        const spotMarketValue = totalEuro / totalMWh;
-
-        if (!Number.isFinite(spotMarketValue)) {
-          setLoading(false);
-          showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-		  setCalcEnabled(false);
-          window.totalMWh = undefined;
-          window.spotMarketValue = undefined;
-          return;
-        }
-
-        if (spotMarketValue < 10 || spotMarketValue > 300) {
-          showWarning("⚠️ Der ermittelte Spotmarktwert liegt außerhalb typischer Marktbereiche.<br>Bitte Spotpreise prüfen. (Für sichere Eingabe ggf. Option B nutzen.)");
-        } else {
-          showOkStatus("Lastgang erfolgreich verarbeitet. Du kannst jetzt berechnen.");
-		  checkModeBReady();
-        }
-
-        window.totalMWh = totalMWh;
-        window.spotMarketValue = spotMarketValue;
-
-        setLoading(false);
-      } catch (err){
-        console.error(err);
-        setLoading(false);
-        showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-		setCalcEnabled(false);
-        window.totalMWh = undefined;
-        window.spotMarketValue = undefined;
+    function isMonotonicSequence(nums){
+      if (nums.length < 10) return false;
+      let inc = 0;
+      for (let i = 1; i < nums.length; i++){
+        if (nums[i] === nums[i-1] + 1) inc++;
       }
-    };
+      return inc / (nums.length - 1) > 0.9;
+    }
 
-    reader.onerror = () => {
-      setLoading(false);
+    function looksLikeDate(nums){
+      const inRange = nums.filter(n => n >= 30000 && n <= 60000).length;
+      return inRange / nums.length > 0.8;
+    }
+
+    Object.keys(rows[0]).forEach(col => {
+
+      const name = String(col).toLowerCase();
+      if (name.includes("datum") || name.includes("zeit") || name.includes("nr")) return;
+
+      const nums = sample.map(r => Number(r[col])).filter(n => Number.isFinite(n));
+      if (nums.length < 50) return;
+      if (looksLikeDate(nums)) return;
+      if (isMonotonicSequence(nums)) return;
+
+      let score = nums.length;
+      const mean = nums.reduce((a,b)=>a+b,0) / nums.length;
+      const variance = nums.reduce((a,b)=>a + Math.pow(b-mean,2),0) / nums.length;
+      score += Math.min(variance, 1e6);
+
+      if (score > bestScore){
+        bestScore = score;
+        consumptionColumn = col;
+      }
+    });
+
+    if (!consumptionColumn){
       showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-	  setCalcEnabled(false);
-      window.totalMWh = undefined;
-      window.spotMarketValue = undefined;
-    };
+      continue;
+    }
 
-    reader.readAsArrayBuffer(file);
-  });
+    const consumptionKWh = rows.map((row, i) => {
+      const v = Number(row[consumptionColumn]);
+      return Number.isFinite(v) ? v : 0;
+    });
+
+    if (!Array.isArray(SPOT_PRICES) || SPOT_PRICES.length !== consumptionKWh.length){
+      showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
+      continue;
+    }
+
+    const spotCosts = consumptionKWh.map((kWh,i)=>(kWh * SPOT_PRICES[i]) / 1000);
+
+    totalKWhSum += consumptionKWh.reduce((a,b)=>a+b,0);
+    totalEuroSum += spotCosts.reduce((a,b)=>a+b,0);
+  }
+
+  const totalMWh = totalKWhSum / 1000;
+  const spotMarketValue = totalEuroSum / totalMWh;
+
+  if (!Number.isFinite(totalMWh) || totalMWh <= 0){
+    showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
+    setLoading(false);
+    return;
+  }
+
+  window.totalMWh = totalMWh;
+  window.spotMarketValue = spotMarketValue;
+
+  showOkStatus("Lastgang erfolgreich verarbeitet.");
+  checkModeBReady();
+  setLoading(false);
+});
 }
 
 function recalcFromUnit() {
@@ -1663,7 +1532,7 @@ function recalcFromUnit() {
     });
 
     if (!Array.isArray(SPOT_PRICES) || SPOT_PRICES.length !== consumptionKWh.length){
-      showWarning("Spotpreislänge passt nicht zum Lastgang.");
+      showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
       return;
     }
 
