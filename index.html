@@ -163,6 +163,7 @@ body{
   background:#fff;
   border-radius:10px;
   box-sizing:border-box;
+   grid-column:1 / -1;   
 }
 .uploadBox input[type="file"]{
   width:100%;
@@ -618,7 +619,7 @@ body{
 <div class="container">
 <div class="header header--center">
   <img src="N-ERGIE_LOGO_RGB.png" alt="N-ERGIE">
-  <h1>Toleranzbandrechnung Strom Industrie</h1>
+  <h1>Toleranzbandrechnung Strom Erzeugung</h1>
   <p>Berechnung eines angepassten Arbeitspreises auf Basis von Verbrauch und Spotpreis.</p>
 </div>
 
@@ -661,7 +662,7 @@ body{
    <div class="form">
     <div class="uploadBox" id="uploadBoxA">
       <div class="form-group" style="margin:0">
-        <label for="lastgangFile">Lastgang-Datei hochladen (CSV oder Excel) <span style="color:red">*</span></label>
+        <label for="lastgangFile">Lastgang-Datei hochladen (CSV oder Excel)</label>
 <input type="file" id="lastgangFile" accept=".csv,.xlsx,.xls" multiple>
         <small style="display:block;color:#565656;margin-top:6px">
           15-Minuten-Lastgang für ein vollständiges Kalenderjahr
@@ -683,13 +684,6 @@ body{
         </div>
       </div>
     </div>
-	<div class="form-group">
-  <label for="slpMWh">SLP-Menge MWh (optional)</label>
-  <input id="slpMWh" type="number" step="0.01" min="0">
-  <small style="display:block;color:#565656;margin-top:6px">
-    Wird dem Jahresverbrauch hinzugerechnet.
-  </small>
-</div>
   </div>
 </div>
 
@@ -977,9 +971,6 @@ function clearOptionA(){
   const file = document.getElementById("lastgangFile");
   if (file) file.value = "";
 
-  const slp = document.getElementById("slpMWh");
-  if (slp) slp.value = "";
-
   document.getElementById("unitBox").style.display = "none";
 }
 
@@ -1130,31 +1121,23 @@ if (hasError) {
   let AM = null; 
   let Spot = null;
 
-if (mode === "A"){
+  if (mode === "A"){
+    if (!Number.isFinite(window.totalMWh) || !Number.isFinite(window.spotMarketValue)){
+      showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
+	  setCalcEnabled(false);
+      return;
+    }
+    AM = window.totalMWh;
+    Spot = window.spotMarketValue;
+  } else {
+    AM = reqNumber(document.getElementById("sumMWh").value);
+    Spot = reqNumber(document.getElementById("spot").value);
 
-  if (!Number.isFinite(window.totalMWh) || !Number.isFinite(window.spotMarketValue)){
-    showWarning("Lastgang konnte nicht sicher erkannt/ausgewertet werden.<br>Bitte Option B verwenden und Jahresverbrauch + Spotpreis manuell eintragen.");
-    setCalcEnabled(false);
-    return;
+    if (!AM || !Spot){
+      showWarning("Bitte alle Pflichtfelder ausfüllen.");
+      return;
+    }
   }
-
-  const slpInput = document.getElementById("slpMWh");
-  const slpValue = slpInput && slpInput.value ? Number(slpInput.value) : 0;
-
-  AM = window.totalMWh + (Number.isFinite(slpValue) ? slpValue : 0);
-  Spot = window.spotMarketValue;
-
-} else {
-
-  AM = reqNumber(document.getElementById("sumMWh").value);
-  Spot = reqNumber(document.getElementById("spot").value);
-
-}
-
-if (!AM || !Spot){
-  showWarning("Bitte alle Pflichtfelder ausfüllen.");
-  return;
-}
 
   const TBU = 0.8 * VM;
   const TBO = 1.2 * VM;
@@ -1406,8 +1389,7 @@ lastgangInput.addEventListener("change", async () => {
   window.totalMWh = undefined;
   window.spotMarketValue = undefined;
   setCalcEnabled(false);
-const slp = document.getElementById("slpMWh");
-if (slp) slp.value = "";
+
   const unitBox = document.getElementById("unitBox");
   if (unitBox) unitBox.style.display = "none";
 
